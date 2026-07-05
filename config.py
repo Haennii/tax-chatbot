@@ -6,6 +6,7 @@ load_dotenv()
 # API 키
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+MOLEG_API_KEY = os.getenv("MOLEG_API_KEY")   # 법제처 Open API 아이디
 
 # 경로
 DATA_DIR = "data"

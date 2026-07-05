@@ -1,7 +1,7 @@
 # 세법 챗봇 (Tax Law Chatbot)
 
-세법 조문과 판례를 기반으로 답변하는 RAG(검색 증강 생성) 챗봇입니다.  
-일반 LLM의 할루시네이션을 극복하기 위해, 실제 세법 데이터를 검색한 뒤 그 근거를 바탕으로만 답변합니다.
+법제처 Open API로 최신 세법 조문을 자동으로 가져와 RAG(검색 증강 생성) 방식으로 답변하는 챗봇입니다.
+법인세법 · 소득세법 · 부가가치세법을 커버하며, 답변 시 근거 조문을 함께 표시합니다.
 
 ---
 
@@ -10,12 +10,14 @@
 ```
 사용자 질문
     ↓
-벡터DB에서 관련 세법 조문 / 판례 검색
+ChromaDB에서 관련 세법 조문 검색
     ↓
-LLM에게 "이 자료를 근거로만 답변해" 지시
+Claude에게 "이 조문만 근거로 답변해" 지시
     ↓
-출처가 명시된 신뢰도 높은 답변
+근거 조문이 명시된 신뢰도 높은 답변
 ```
+
+할루시네이션 방지: LLM이 자체 지식으로 답변하지 않고, 실제 조문 원문을 검색한 뒤 그 내용만을 근거로 답변합니다.
 
 ---
 
@@ -28,6 +30,7 @@ LLM에게 "이 자료를 근거로만 답변해" 지시
 | 벡터DB | ChromaDB |
 | RAG 프레임워크 | LangChain |
 | 임베딩 | OpenAI text-embedding-3-small |
+| 세법 데이터 | 법제처 Open API |
 
 ---
 
@@ -37,21 +40,21 @@ LLM에게 "이 자료를 근거로만 답변해" 지시
 tax-chatbot/
 │
 ├── app.py              # Streamlit 앱 실행 진입점
-├── config.py           # 모델명, 파라미터 등 설정값
-├── .env                # API 키 (git 제외 - .gitignore 처리됨)
+├── config.py           # 모델명, 경로, 파라미터 설정값
+├── .env                # API 키 (git 제외)
 ├── .env.example        # API 키 템플릿 (git 포함)
 ├── requirements.txt    # 패키지 목록
 │
-├── data/               # 세법 원본 파일 보관
-│   ├── laws/           # 세법 조문 (PDF, TXT)
-│   └── cases/          # 판례 (PDF, TXT)
+├── data/
+│   └── laws/           # 법제처 API로 받아온 조문 JSON 저장
 │
-├── db/                 # 벡터DB 저장소 (자동 생성, git 제외)
+├── db/                 # ChromaDB 벡터 저장소 (자동 생성, git 제외)
 │
-└── src/                # 내부 로직
-    ├── loader.py       # data/ 파일 읽기 및 청크 분할
-    ├── indexer.py      # 벡터DB 구축 및 업데이트
-    └── chatbot.py      # 검색 + LLM 호출 + 답변 생성
+└── src/
+    ├── fetcher.py      # 법제처 API → 조문 다운로드 → data/laws/ 저장
+    ├── loader.py       # data/laws/ 파일 읽기 → Document 변환
+    ├── indexer.py      # Document → 청크 분할 → 벡터DB 저장
+    └── chatbot.py      # 질문 → 조문 검색 → Claude 호출 → 답변 반환
 ```
 
 ---
@@ -72,19 +75,25 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-```
-ANTHROPIC_API_KEY=여기에_클로드_API_키_입력
-OPENAI_API_KEY=여기에_오픈AI_API_키_입력
+| 키 | 발급처 |
+|---|---|
+| `ANTHROPIC_API_KEY` | https://console.anthropic.com |
+| `OPENAI_API_KEY` | https://platform.openai.com |
+| `MOLEG_API_KEY` | https://www.law.go.kr (회원가입 후 아이디 사용) |
+
+### 3. 세법 조문 다운로드 (법제처 API)
+
+```bash
+python -m src.fetcher
 ```
 
-### 3. 세법 데이터 추가
-
-`data/laws/` 또는 `data/cases/` 폴더에 PDF 또는 TXT 파일을 넣습니다.
+법인세법, 소득세법, 부가가치세법 조문을 `data/laws/`에 저장합니다.  
+개정이 있을 때마다 이 명령어를 다시 실행하면 최신 조문으로 갱신됩니다.
 
 ### 4. 벡터DB 구축
 
 ```bash
-python -c "from src.indexer import build_index; build_index()"
+python -m src.indexer
 ```
 
 ### 5. 앱 실행
@@ -98,12 +107,13 @@ streamlit run app.py
 ## 개발 로드맵
 
 - [x] 프로젝트 설계 및 환경 구성
-- [ ] 데이터 로더 구현 (PDF/TXT 파싱)
-- [ ] 벡터DB 인덱싱 구현
-- [ ] RAG 파이프라인 구현
-- [ ] Streamlit UI 구현
-- [ ] 출처 명시 기능
-- [ ] 대화 히스토리 기능
+- [x] 법제처 Open API 연동 (조문 자동 갱신)
+- [x] 데이터 로더 구현
+- [x] 벡터DB 인덱싱 구현
+- [x] RAG 파이프라인 구현
+- [x] Streamlit UI 구현
+- [x] 출처 명시 기능
+- [x] 대화 히스토리 기능
 
 ---
 
@@ -111,4 +121,4 @@ streamlit run app.py
 
 - `.env` 파일에는 API 키가 포함되어 있으므로 절대 GitHub에 올리지 않습니다.
 - `db/` 폴더는 용량이 크므로 git에서 제외합니다.
-- `data/` 폴더의 세법 자료는 저작권에 유의합니다.
+- 법제처 Open API는 무료이며, 회원가입 후 로그인 아이디를 `MOLEG_API_KEY`로 사용합니다.
