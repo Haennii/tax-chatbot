@@ -4,8 +4,6 @@ import os
 load_dotenv()
 
 # API 키
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MOLEG_API_KEY = os.getenv("MOLEG_API_KEY")   # 법제처 Open API 아이디
 
 # 경로
@@ -14,9 +12,10 @@ LAWS_DIR = "data/laws"
 CASES_DIR = "data/cases"
 DB_DIR = "db"
 
-# 모델 설정
-LLM_MODEL = "claude-sonnet-4-6"
-EMBEDDING_MODEL = "text-embedding-3-small"
+# 모델 설정 (Ollama 로컬 모델)
+LLM_MODEL = "llama3.2"
+EMBEDDING_MODEL = "nomic-embed-text"
+OLLAMA_BASE_URL = "http://localhost:11434"
 
 # RAG 설정
 CHUNK_SIZE = 500        # 문서를 자르는 단위 (글자 수)

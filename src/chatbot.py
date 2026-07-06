@@ -2,9 +2,8 @@
 사용자 질문 → 벡터DB 검색 → Claude 호출 → 출처 포함 답변 반환
 """
 
-from langchain_openai import OpenAIEmbeddings
+from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_chroma import Chroma
-from langchain_anthropic import ChatAnthropic
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 import config
@@ -27,17 +26,17 @@ PROMPT = PromptTemplate(
 
 
 def get_chain():
-    embeddings = OpenAIEmbeddings(
+    embeddings = OllamaEmbeddings(
         model=config.EMBEDDING_MODEL,
-        api_key=config.OPENAI_API_KEY,
+        base_url=config.OLLAMA_BASE_URL,
     )
     db = Chroma(
         persist_directory=config.DB_DIR,
         embedding_function=embeddings,
     )
-    llm = ChatAnthropic(
+    llm = ChatOllama(
         model=config.LLM_MODEL,
-        api_key=config.ANTHROPIC_API_KEY,
+        base_url=config.OLLAMA_BASE_URL,
     )
     chain = RetrievalQA.from_chain_type(
         llm=llm,

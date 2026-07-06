@@ -3,7 +3,7 @@
 실행: python -m src.indexer
 """
 
-from langchain_openai import OpenAIEmbeddings
+from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from src.loader import load_laws
@@ -24,9 +24,9 @@ def build_index():
     chunks = splitter.split_documents(docs)
     print(f"청크 생성: {len(chunks)}개")
 
-    embeddings = OpenAIEmbeddings(
+    embeddings = OllamaEmbeddings(
         model=config.EMBEDDING_MODEL,
-        api_key=config.OPENAI_API_KEY,
+        base_url=config.OLLAMA_BASE_URL,
     )
 
     Chroma.from_documents(
