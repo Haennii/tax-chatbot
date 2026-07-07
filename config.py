@@ -13,7 +13,7 @@ CASES_DIR = "data/cases"
 DB_DIR = "db"
 
 # 모델 설정 (Ollama 로컬 모델)
-LLM_MODEL = "llama3.2"
+LLM_MODEL = "llama3"
 EMBEDDING_MODEL = "nomic-embed-text"
 OLLAMA_BASE_URL = "http://localhost:11434"
 

@@ -30,7 +30,7 @@ def get_law_id(law_name: str) -> str:
     r.raise_for_status()
 
     root = ET.fromstring(r.content)
-    law = root.find(".//법령")
+    law = root.find(".//law")
     if law is None:
         raise ValueError(f"법령을 찾을 수 없습니다: {law_name}")
 

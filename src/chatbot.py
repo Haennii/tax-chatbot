@@ -1,18 +1,21 @@
 """
-사용자 질문 → 벡터DB 검색 → Claude 호출 → 출처 포함 답변 반환
+사용자 질문 → BM25 키워드 검색 → Ollama 호출 → 출처 포함 답변 반환
 """
 
-from langchain_ollama import OllamaEmbeddings, ChatOllama
-from langchain_chroma import Chroma
-from langchain.chains import RetrievalQA
+import json
+from pathlib import Path
+from rank_bm25 import BM25Okapi
+from langchain_ollama import ChatOllama
 from langchain.prompts import PromptTemplate
 import config
 
 PROMPT = PromptTemplate(
     input_variables=["context", "question"],
-    template="""당신은 대한민국 세법 전문가입니다.
-반드시 아래 세법 조문만을 근거로 답변하세요.
-조문에 없는 내용은 추측하지 말고 "해당 내용은 제공된 조문에서 확인되지 않습니다"라고 답하세요.
+    template="""You are a Korean tax law expert. You must always respond in Korean (한국어).
+
+아래 세법 조문을 근거로 질문에 답하세요.
+반드시 한국어로만 답변하세요.
+조문에 없는 내용은 "해당 내용은 제공된 조문에서 확인되지 않습니다"라고 답하세요.
 답변 마지막에 근거 조문을 명시하세요.
 
 [관련 세법 조문]
@@ -21,53 +24,51 @@ PROMPT = PromptTemplate(
 [질문]
 {question}
 
-[답변]""",
+[한국어 답변]""",
 )
 
 
-def get_chain():
-    embeddings = OllamaEmbeddings(
-        model=config.EMBEDDING_MODEL,
-        base_url=config.OLLAMA_BASE_URL,
-    )
-    db = Chroma(
-        persist_directory=config.DB_DIR,
-        embedding_function=embeddings,
-    )
-    llm = ChatOllama(
-        model=config.LLM_MODEL,
-        base_url=config.OLLAMA_BASE_URL,
-    )
-    chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=db.as_retriever(search_kwargs={"k": config.TOP_K}),
-        chain_type="stuff",
-        chain_type_kwargs={"prompt": PROMPT},
-        return_source_documents=True,
-    )
-    return chain
+def load_all_articles():
+    articles = []
+    for path in Path(config.LAWS_DIR).glob("*.json"):
+        with open(path, encoding="utf-8") as f:
+            articles.extend(json.load(f))
+    return articles
+
+
+def bm25_search(query: str, articles: list, k: int = 5) -> list:
+    corpus = [a["text"] for a in articles]
+    tokenized = [list(doc) for doc in corpus]
+    bm25 = BM25Okapi(tokenized)
+    scores = bm25.get_scores(list(query))
+    top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
+    return [articles[i] for i in top_indices]
 
 
 def ask(question: str) -> dict:
-    chain = get_chain()
-    result = chain.invoke({"query": question})
+    articles = load_all_articles()
+    top_articles = bm25_search(question, articles, k=config.TOP_K)
 
-    # 중복 출처 제거
-    seen = set()
-    sources = []
-    for doc in result["source_documents"]:
-        m = doc.metadata
-        key = (m.get("law"), m.get("article_num"))
-        if key not in seen:
-            seen.add(key)
-            sources.append({
-                "law": m.get("law", ""),
-                "article_num": m.get("article_num", ""),
-                "article_title": m.get("article_title", ""),
-                "effective_date": m.get("effective_date", ""),
-            })
+    context = "\n\n".join(
+        f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text']}"
+        for a in top_articles
+    )
+
+    llm = ChatOllama(model=config.LLM_MODEL, base_url=config.OLLAMA_BASE_URL)
+    prompt_text = PROMPT.format(context=context, question=question)
+    response = llm.invoke(prompt_text)
+
+    sources = [
+        {
+            "law": a["law"],
+            "article_num": a["article_num"],
+            "article_title": a["article_title"],
+            "effective_date": a["effective_date"],
+        }
+        for a in top_articles
+    ]
 
     return {
-        "answer": result["result"],
+        "answer": response.content,
         "sources": sources,
     }
