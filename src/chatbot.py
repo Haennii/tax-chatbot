@@ -154,7 +154,10 @@ def tokenize(text: str) -> list[str]:
     return [token.form for token in kiwi.tokenize(text)]
 
 
-def bm25_search(query: str, articles: list, k: int = 5) -> list:
+MIN_RELEVANCE_SCORE = 12.0  # 이 점수 미만이면 관련 조문 없음으로 판단
+
+def bm25_search(query: str, articles: list, k: int = 5) -> tuple[list, float]:
+    """(검색결과, 최고점수) 반환"""
     corpus = [a["text"] for a in articles]
     tokenized = [tokenize(doc) for doc in corpus]
     bm25 = BM25Okapi(tokenized)
@@ -168,19 +171,31 @@ def bm25_search(query: str, articles: list, k: int = 5) -> list:
         boosted.append((i, score + bonus))
 
     top_indices = sorted(boosted, key=lambda x: x[1], reverse=True)[:k]
-    return [articles[i] for i, _ in top_indices]
+    top_score = boosted[top_indices[0][0]][1] if top_indices else 0.0
+    return [articles[i] for i, _ in top_indices], top_score
 
 
 def ask(question: str) -> dict:
     articles = load_all_articles()
-    top_articles = bm25_search(question, articles, k=config.TOP_K)
+    top_articles, top_score = bm25_search(question, articles, k=config.TOP_K)
+
+    # 관련 조문 없음 판단
+    if top_score < MIN_RELEVANCE_SCORE:
+        return {
+            "answer": (
+                "죄송합니다. 현재 데이터에는 해당 질문과 관련된 조문이 없습니다.\n\n"
+                "현재 수록된 법령: 법인세법, 소득세법, 부가가치세법\n"
+                "연구인력개발세액공제 등은 **조세특례제한법**에 규정되어 있으며, "
+                "해당 법령은 아직 데이터에 추가되지 않았습니다."
+            ),
+            "sources": [],
+        }
 
     # 제목 키워드 일치도가 높으면 상위 2개만 사용
-    if top_articles:
-        q_tokens = set(tokenize(question))
-        top_title_tokens = set(tokenize(top_articles[0]["article_title"]))
-        if len(q_tokens & top_title_tokens) >= 2:
-            top_articles = top_articles[:2]
+    q_tokens = set(tokenize(question))
+    top_title_tokens = set(tokenize(top_articles[0]["article_title"]))
+    if len(q_tokens & top_title_tokens) >= 2:
+        top_articles = top_articles[:2]
 
     llm = ChatOllama(model=config.LLM_MODEL, base_url=config.OLLAMA_BASE_URL, temperature=0)
 
