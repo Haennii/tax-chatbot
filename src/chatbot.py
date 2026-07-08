@@ -199,9 +199,10 @@ def ask(question: str) -> dict:
 
     llm = ChatOllama(model=config.LLM_MODEL, base_url=config.OLLAMA_BASE_URL, temperature=0)
 
-    # 상위 조문에 율표가 있으면 직접 파싱해서 표시
+    # 상위 조문에 박스 형식 율표가 있으면 직접 파싱, 없으면 LLM
     top = top_articles[0]
-    rate_table = parse_rate_table(top['_raw_text'])
+    has_table = any(c in top['_raw_text'] for c in '┌┐└┘├┤┬┴┼─│')
+    rate_table = parse_rate_table(top['_raw_text']) if has_table else None
 
     if rate_table:
         # 율표는 직접 파싱, LLM은 한 줄 소개만

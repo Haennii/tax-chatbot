@@ -61,13 +61,24 @@ def fetch_articles(law_id: str) -> list[dict]:
         title = unit.findtext("조문제목", "").strip()
         body = unit.findtext("조문내용", "").strip()
 
-        # 항(①②③...) 내용 수집
+        # 항(①②③...) → 호(1.2.3.) → 목(가.나.다.) 재귀 수집
+        def collect_text(elem) -> str:
+            parts = []
+            body_text = elem.findtext("항내용") or elem.findtext("호내용") or elem.findtext("목내용") or ""
+            if body_text.strip():
+                parts.append(body_text.strip())
+            for child_tag in ["호", "목"]:
+                for child in elem.findall(child_tag):
+                    child_text = collect_text(child)
+                    if child_text:
+                        parts.append(child_text)
+            return "\n".join(parts)
+
         paragraphs = []
-        for para in unit.findall(".//항"):
-            p_num = para.findtext("항번호", "").strip()
-            p_body = para.findtext("항내용", "").strip()
-            if p_body:
-                paragraphs.append(f"{p_num} {p_body}")
+        for para in unit.findall("항"):
+            para_text = collect_text(para)
+            if para_text:
+                paragraphs.append(para_text)
 
         full_text = body
         if paragraphs:
