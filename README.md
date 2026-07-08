@@ -1,7 +1,13 @@
 # 세법 챗봇 (Tax Law Chatbot)
 
-법제처 Open API로 최신 세법 조문을 자동으로 가져와 RAG(검색 증강 생성) 방식으로 답변하는 챗봇입니다.
-법인세법 · 소득세법 · 부가가치세법을 커버하며, 답변 시 근거 조문을 함께 표시합니다.
+법제처 Open API로 최신 세법 조문을 자동으로 가져와 로컬 LLM(Ollama)으로 답변하는 무료 세법 챗봇입니다.  
+**API 비용 없이** 로컬에서 완전히 동작하며, 답변 시 근거 조문을 함께 표시합니다.
+
+---
+
+## 데모
+
+![챗봇 데모](assets/demo.png)
 
 ---
 
@@ -10,14 +16,17 @@
 ```
 사용자 질문
     ↓
-ChromaDB에서 관련 세법 조문 검색
+BM25 키워드 검색 (kiwipiepy 한국어 형태소 분석)
     ↓
-Claude에게 "이 조문만 근거로 답변해" 지시
+관련 세법 조문 추출
     ↓
-근거 조문이 명시된 신뢰도 높은 답변
+율표(공제율 표)가 있으면 → 직접 파싱하여 카테고리별 정리
+없으면 → Ollama 로컬 LLM(qwen2:7b)으로 요약
+    ↓
+근거 조문이 명시된 답변
 ```
 
-할루시네이션 방지: LLM이 자체 지식으로 답변하지 않고, 실제 조문 원문을 검색한 뒤 그 내용만을 근거로 답변합니다.
+**할루시네이션 방지**: LLM이 자체 지식으로 답변하지 않고, 실제 조문 원문을 검색한 뒤 그 내용만을 근거로 답변합니다.
 
 ---
 
@@ -26,11 +35,21 @@ Claude에게 "이 조문만 근거로 답변해" 지시
 | 역할 | 기술 |
 |---|---|
 | UI | Streamlit |
-| LLM | Claude API (Anthropic) |
-| 벡터DB | ChromaDB |
+| LLM | Ollama (qwen2:7b) — 로컬, 무료 |
+| 검색 | BM25 (rank_bm25) + kiwipiepy 형태소 분석 |
 | RAG 프레임워크 | LangChain |
-| 임베딩 | OpenAI text-embedding-3-small |
 | 세법 데이터 | 법제처 Open API |
+
+> ChromaDB / OpenAI / Claude API 불필요 — 완전 무료 로컬 실행
+
+---
+
+## 수록 법령 (자동 갱신)
+
+- 법인세법 (255개 조문)
+- 소득세법 (393개 조문)
+- 부가가치세법 (106개 조문)
+- 조세특례제한법 (493개 조문)
 
 ---
 
@@ -48,53 +67,51 @@ tax-chatbot/
 ├── data/
 │   └── laws/           # 법제처 API로 받아온 조문 JSON 저장
 │
-├── db/                 # ChromaDB 벡터 저장소 (자동 생성, git 제외)
-│
 └── src/
     ├── fetcher.py      # 법제처 API → 조문 다운로드 → data/laws/ 저장
     ├── loader.py       # data/laws/ 파일 읽기 → Document 변환
-    ├── indexer.py      # Document → 청크 분할 → 벡터DB 저장
-    └── chatbot.py      # 질문 → 조문 검색 → Claude 호출 → 답변 반환
+    ├── indexer.py      # ChromaDB 인덱싱 (현재 BM25로 대체됨)
+    └── chatbot.py      # 질문 → BM25 검색 → 율표 파싱 또는 LLM → 답변
 ```
 
 ---
 
 ## 설치 및 실행
 
-### 1. 패키지 설치
+### 1. Ollama 설치
+
+[ollama.com](https://ollama.com) 에서 설치 후:
 
 ```bash
+ollama pull qwen2:7b
+```
+
+### 2. 패키지 설치
+
+```bash
+python3 -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+pip install rank_bm25 kiwipiepy
 ```
 
-### 2. API 키 설정
+### 3. 법제처 API 키 설정
 
-`.env.example`을 복사해 `.env` 파일을 만들고 키를 입력합니다.
+[law.go.kr](https://www.law.go.kr) 회원가입 후 Open API 신청.  
+`.env` 파일에 아이디(OC 값) 입력:
 
-```bash
-cp .env.example .env
+```
+MOLEG_API_KEY=your_id_here
 ```
 
-| 키 | 발급처 |
-|---|---|
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com |
-| `OPENAI_API_KEY` | https://platform.openai.com |
-| `MOLEG_API_KEY` | https://www.law.go.kr (회원가입 후 아이디 사용) |
-
-### 3. 세법 조문 다운로드 (법제처 API)
+### 4. 세법 조문 다운로드
 
 ```bash
 python -m src.fetcher
 ```
 
-법인세법, 소득세법, 부가가치세법 조문을 `data/laws/`에 저장합니다.  
-개정이 있을 때마다 이 명령어를 다시 실행하면 최신 조문으로 갱신됩니다.
-
-### 4. 벡터DB 구축
-
-```bash
-python -m src.indexer
-```
+법인세법, 소득세법, 부가가치세법, 조세특례제한법을 `data/laws/`에 저장합니다.  
+개정이 있을 때 다시 실행하면 최신 조문으로 자동 갱신됩니다.
 
 ### 5. 앱 실행
 
@@ -104,21 +121,31 @@ streamlit run app.py
 
 ---
 
-## 개발 로드맵
+## 주요 기능
 
-- [x] 프로젝트 설계 및 환경 구성
-- [x] 법제처 Open API 연동 (조문 자동 갱신)
-- [x] 데이터 로더 구현
-- [x] 벡터DB 인덱싱 구현
-- [x] RAG 파이프라인 구현
-- [x] Streamlit UI 구현
-- [x] 출처 명시 기능
-- [x] 대화 히스토리 기능
+- **율표 직접 파싱**: 가목/나목 같은 법률 약어 없이 카테고리별로 공제율 표시
+- **관련성 점수 필터**: 관련 조문이 없으면 "데이터에 없습니다"로 안내
+- **근거 조문 명시**: 모든 답변에 법령명과 조번호 표시
+- **완전 무료**: 유료 API 불필요, 로컬 LLM만 사용
 
 ---
 
 ## 주의사항
 
 - `.env` 파일에는 API 키가 포함되어 있으므로 절대 GitHub에 올리지 않습니다.
-- `db/` 폴더는 용량이 크므로 git에서 제외합니다.
+- Ollama가 실행 중이어야 챗봇이 동작합니다 (`ollama serve`)
 - 법제처 Open API는 무료이며, 회원가입 후 로그인 아이디를 `MOLEG_API_KEY`로 사용합니다.
+
+---
+
+## 개발 로드맵
+
+- [x] 프로젝트 설계 및 환경 구성
+- [x] 법제처 Open API 연동 (조문 자동 갱신)
+- [x] Ollama 로컬 LLM 연동 (무료화)
+- [x] BM25 + 한국어 형태소 분석 검색 구현
+- [x] 율표 직접 파싱 (가목/나목 제거)
+- [x] 조세특례제한법 추가
+- [x] 관련성 점수 필터링
+- [ ] 상속세 및 증여세법 추가
+- [ ] 모바일 UI 개선
