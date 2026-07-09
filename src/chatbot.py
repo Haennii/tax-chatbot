@@ -156,6 +156,16 @@ def tokenize(text: str) -> list[str]:
 
 MIN_RELEVANCE_SCORE = 5.0  # 이 점수 미만이면 관련 조문 없음으로 판단
 
+LAW_NAME_MAP = {
+    '소득세': '소득세법',
+    '법인세': '법인세법',
+    '부가세': '부가가치세법',
+    '부가가치세': '부가가치세법',
+    '조세특례': '조세특례제한법',
+    '세액공제': '조세특례제한법',
+}
+
+
 def bm25_search(query: str, articles: list, k: int = 5) -> tuple[list, float]:
     """(검색결과, 최고점수) 반환"""
     corpus = [a["text"] for a in articles]
@@ -164,10 +174,36 @@ def bm25_search(query: str, articles: list, k: int = 5) -> tuple[list, float]:
     scores = bm25.get_scores(tokenize(query))
 
     query_tokens = set(tokenize(query))
+
+    # 질문에 법령명이 포함되면 해당 법령 조문 우선
+    preferred_law = None
+    for keyword, law_name in LAW_NAME_MAP.items():
+        if keyword in query:
+            preferred_law = law_name
+            break
+
+    # "소득세율", "법인세율" 같은 합성어 → "세율" 토큰 명시 추가
+    import re as _re
+    if _re.search(r'[가-힣]+세율$', query):
+        query_tokens.add('세율')
+
     boosted = []
     for i, score in enumerate(scores):
         title_tokens = set(tokenize(articles[i]["article_title"]))
         bonus = len(query_tokens & title_tokens) * 3.0
+        # 법령명 일치 보너스
+        if preferred_law and articles[i]["law"] == preferred_law:
+            bonus += 5.0
+        # "소득세율" 같은 합성 세율 질문 → 해당 법령의 "세율" 제목 조문 강력 우선
+        if preferred_law and '세율' in query_tokens and articles[i]["law"] == preferred_law:
+            if '세율' in articles[i]["article_title"]:
+                bonus += 15.0
+            # "세율" 단독 제목인 경우: 조번호 작을수록 일반 세율 → 우선
+            if articles[i]["article_title"].strip() == '세율':
+                try:
+                    bonus += 500 / (int(articles[i]["article_num"]) + 1)
+                except ValueError:
+                    bonus += 5.0
         boosted.append((i, score + bonus))
 
     top_indices = sorted(boosted, key=lambda x: x[1], reverse=True)[:k]
