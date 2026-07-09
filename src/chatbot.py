@@ -154,7 +154,7 @@ def tokenize(text: str) -> list[str]:
     return [token.form for token in kiwi.tokenize(text)]
 
 
-MIN_RELEVANCE_SCORE = 12.0  # 이 점수 미만이면 관련 조문 없음으로 판단
+MIN_RELEVANCE_SCORE = 5.0  # 이 점수 미만이면 관련 조문 없음으로 판단
 
 def bm25_search(query: str, articles: list, k: int = 5) -> tuple[list, float]:
     """(검색결과, 최고점수) 반환"""
@@ -175,61 +175,87 @@ def bm25_search(query: str, articles: list, k: int = 5) -> tuple[list, float]:
     return [articles[i] for i, _ in top_indices], top_score
 
 
-def ask(question: str) -> dict:
+NO_RESULT_MSG = (
+    "죄송합니다. 현재 데이터에는 해당 질문과 관련된 조문이 없습니다.\n\n"
+    "현재 수록된 법령: 법인세법, 소득세법, 부가가치세법, 조세특례제한법"
+)
+
+
+def _prepare(question: str):
+    """검색 + 율표 파싱. (top_articles, rate_table, sources, no_result) 반환."""
     articles = load_all_articles()
     top_articles, top_score = bm25_search(question, articles, k=config.TOP_K)
 
-    # 관련 조문 없음 판단
     if top_score < MIN_RELEVANCE_SCORE:
-        return {
-            "answer": (
-                "죄송합니다. 현재 데이터에는 해당 질문과 관련된 조문이 없습니다.\n\n"
-                "현재 수록된 법령: 법인세법, 소득세법, 부가가치세법\n"
-                "연구인력개발세액공제 등은 **조세특례제한법**에 규정되어 있으며, "
-                "해당 법령은 아직 데이터에 추가되지 않았습니다."
-            ),
-            "sources": [],
-        }
+        return [], None, [], True
 
-    # 제목 키워드 일치도가 높으면 상위 2개만 사용
     q_tokens = set(tokenize(question))
     top_title_tokens = set(tokenize(top_articles[0]["article_title"]))
-    if len(q_tokens & top_title_tokens) >= 2:
-        top_articles = top_articles[:2]
+    top_articles = top_articles[:1] if len(q_tokens & top_title_tokens) >= 2 else top_articles[:2]
 
-    llm = ChatOllama(model=config.LLM_MODEL, base_url=config.OLLAMA_BASE_URL, temperature=0)
-
-    # 상위 조문에 박스 형식 율표가 있으면 직접 파싱, 없으면 LLM
     top = top_articles[0]
     has_table = any(c in top['_raw_text'] for c in '┌┐└┘├┤┬┴┼─│')
     rate_table = parse_rate_table(top['_raw_text']) if has_table else None
 
+    sources = [
+        {"law": a["law"], "article_num": a["article_num"],
+         "article_title": a["article_title"], "effective_date": a["effective_date"]}
+        for a in top_articles
+    ]
+    return top_articles, rate_table, sources, False
+
+
+def ask(question: str) -> dict:
+    """동기 호출용 (테스트 등)"""
+    top_articles, rate_table, sources, no_result = _prepare(question)
+    if no_result:
+        return {"answer": NO_RESULT_MSG, "sources": []}
+
+    llm = ChatOllama(model=config.LLM_MODEL, base_url=config.OLLAMA_BASE_URL, temperature=0)
+    top = top_articles[0]
+
     if rate_table:
-        # 율표는 직접 파싱, LLM은 한 줄 소개만
-        intro_prompt = INTRO_PROMPT.format(
-            article_title=top['article_title'],
-            law=top['law'],
-            article_num=top['article_num'],
-            question=question,
-        )
-        intro = llm.invoke(intro_prompt).content.strip()
+        intro = llm.invoke(INTRO_PROMPT.format(
+            article_title=top['article_title'], law=top['law'],
+            article_num=top['article_num'], question=question,
+        )).content.strip()
         answer = f"{intro}\n\n{rate_table}\n\n[근거: {top['law']} 제{top['article_num']}조 {top['article_title']}]"
     else:
         context = "\n\n".join(
-            f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text']}"
+            f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text'][:800]}"
             for a in top_articles
         )
-        prompt_text = GENERAL_PROMPT.format(context=context, question=question)
-        answer = llm.invoke(prompt_text).content
-
-    sources = [
-        {
-            "law": a["law"],
-            "article_num": a["article_num"],
-            "article_title": a["article_title"],
-            "effective_date": a["effective_date"],
-        }
-        for a in top_articles
-    ]
+        answer = llm.invoke(GENERAL_PROMPT.format(context=context, question=question)).content
 
     return {"answer": answer, "sources": sources}
+
+
+def ask_stream(question: str):
+    """스트리밍 호출용. (chunk_text, sources_or_None) 를 yield."""
+    top_articles, rate_table, sources, no_result = _prepare(question)
+    if no_result:
+        yield NO_RESULT_MSG, sources
+        return
+
+    llm = ChatOllama(model=config.LLM_MODEL, base_url=config.OLLAMA_BASE_URL, temperature=0)
+    top = top_articles[0]
+
+    if rate_table:
+        # 율표: 소개문 스트리밍 후 파싱된 표 즉시 출력
+        intro_chunks = []
+        for chunk in llm.stream(INTRO_PROMPT.format(
+            article_title=top['article_title'], law=top['law'],
+            article_num=top['article_num'], question=question,
+        )):
+            intro_chunks.append(chunk.content)
+            yield chunk.content, None
+        suffix = f"\n\n{rate_table}\n\n[근거: {top['law']} 제{top['article_num']}조 {top['article_title']}]"
+        yield suffix, sources
+    else:
+        context = "\n\n".join(
+            f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text'][:800]}"
+            for a in top_articles
+        )
+        for chunk in llm.stream(GENERAL_PROMPT.format(context=context, question=question)):
+            yield chunk.content, None
+        yield "", sources
