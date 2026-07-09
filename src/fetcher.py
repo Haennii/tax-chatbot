@@ -10,7 +10,10 @@ from pathlib import Path
 import config
 
 # 가져올 세법 목록
-TARGET_LAWS = ["법인세법", "소득세법", "부가가치세법", "조세특례제한법"]
+TARGET_LAWS = [
+    "법인세법", "소득세법", "부가가치세법", "조세특례제한법",
+    "법인세법 시행령", "소득세법 시행령", "조세특례제한법 시행령",
+]
 
 SEARCH_URL = "https://www.law.go.kr/DRF/lawSearch.do"
 LAW_URL = "https://www.law.go.kr/DRF/lawService.do"
