@@ -47,7 +47,8 @@ if question := st.chat_input("세법 질문을 입력하세요..."):
         sources = []
         placeholder = st.empty()
 
-        for chunk, src in ask_stream(question):
+        history = st.session_state.messages[:-1]  # 현재 질문 제외한 이전 대화
+        for chunk, src in ask_stream(question, history=history):
             if src is not None:
                 sources = src
             full_text += chunk

@@ -9,6 +9,7 @@ from rank_bm25 import BM25Okapi
 from kiwipiepy import Kiwi
 from langchain_ollama import ChatOllama
 from langchain.prompts import PromptTemplate
+from langchain.schema import HumanMessage, AIMessage, SystemMessage
 import config
 
 kiwi = Kiwi()
@@ -16,29 +17,37 @@ kiwi = Kiwi()
 # ──────────────────────────────────────────────
 # 프롬프트
 # ──────────────────────────────────────────────
+SYSTEM_ROLE = (
+    "당신은 대한민국 세법 전문가로서 20년 이상의 세무사 경력을 보유하고 있습니다. "
+    "법인세법, 소득세법, 부가가치세법, 조세특례제한법 및 각 시행령에 정통하며, "
+    "납세자와 세무 실무자가 이해하기 쉽도록 정확하고 명확하게 답변합니다. "
+    "반드시 한국어로만 답변하고, 제시된 조문 외의 내용은 추측하지 않습니다."
+)
+
 INTRO_PROMPT = PromptTemplate(
     input_variables=["article_title", "law", "article_num", "question"],
-    template="""당신은 대한민국 세법 전문가입니다. 한국어로만 답변하세요.
-질문: {question}
-근거 조문: {law} 제{article_num}조 ({article_title})
-위 조문을 근거로 한 문장으로 간단히 소개하세요. 율표 내용은 이미 아래에 별도로 표시됩니다.
-[답변]""",
+    template="""{system_role}
+
+질문: {{question}}
+근거 조문: {{law}} 제{{article_num}}조 ({{article_title}})
+세법 전문가로서 위 조문을 근거로 한 문장으로 핵심만 설명하세요. 율표 내용은 별도로 표시됩니다.
+[답변]""".replace("{system_role}", SYSTEM_ROLE),
 )
 
 GENERAL_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
-    template="""당신은 대한민국 세법 전문가입니다. 반드시 한국어로만 답변하세요.
+    template="""{system_role}
 
-아래 조문을 근거로 질문에 답하세요. 조문에 없는 내용은 추측하지 마세요.
-답변 마지막에 근거 조문(법령명, 조번호)을 명시하세요.
+아래 조문을 근거로 질문에 답하세요. 조문에 없는 내용은 절대 추측하지 마세요.
+핵심 내용을 조목조목 설명하고, 답변 마지막에 근거 조문(법령명, 조번호)을 명시하세요.
 
 [세법 조문]
-{context}
+{{context}}
 
 [질문]
-{question}
+{{question}}
 
-[한국어 답변]""",
+[세법 전문가 답변]""".replace("{system_role}", SYSTEM_ROLE),
 )
 
 # ──────────────────────────────────────────────
@@ -49,6 +58,8 @@ CONCEPT_MAP: list[tuple[list[str], str, str]] = [
     # (매칭 키워드 목록, 법령명, 조번호)
     # ── 세율 (구체적인 것 먼저) ──
     (["양도소득세율", "양도세율", "양도소득세 세율"], "소득세법", "104"),
+    (["양도소득세 신고", "양도세 신고", "양도소득 예정신고", "양도세 신고기한"], "소득세법", "105"),
+    (["양도소득세 확정신고", "양도소득 확정신고"], "소득세법", "110"),
     (["법인세율", "법인세 세율", "법인세 과세표준"], "법인세법", "55"),
     (["소득세율", "소득세 세율", "소득세 과세표준"], "소득세법", "55"),
     (["최저한세율", "최저한세", "법인세 최저한세"], "조세특례제한법", "132"),
@@ -61,6 +72,7 @@ CONCEPT_MAP: list[tuple[list[str], str, str]] = [
     (["접대비 한도", "접대비"], "법인세법", "25"),
     (["감가상각"], "법인세법", "23"),
     # ── 세액공제 ──
+    (["의료비 세액공제", "의료비공제", "의료비"], "소득세법 시행령", "118"),
     (["연구인력개발", "연구개발세액공제", "연구비 세액공제"], "조세특례제한법", "10"),
     (["중소기업 특별세액감면"], "조세특례제한법", "7"),
     # ── 소득세 ──
@@ -287,10 +299,41 @@ def ask(question: str) -> dict:
     return {"answer": answer, "sources": sources}
 
 
-def ask_stream(question: str):
+def _build_messages(context: str, question: str, history: list[dict]) -> list:
+    """대화 히스토리 + 현재 질문을 LangChain 메시지 목록으로 변환."""
+    msgs = [SystemMessage(content=(
+        SYSTEM_ROLE + " 답변 마지막에 근거 조문(법령명, 조번호)을 명시하세요."
+    ))]
+    for m in history:
+        if m["role"] == "user":
+            msgs.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "assistant":
+            msgs.append(AIMessage(content=m["content"]))
+    msgs.append(HumanMessage(content=f"[세법 조문]\n{context}\n\n[질문]\n{question}"))
+    return msgs
+
+
+def _expand_with_history(question: str, history: list[dict]) -> str:
+    """짧거나 모호한 후속 질문에 직전 사용자 질문을 붙여 검색 정확도 향상."""
+    if not history or len(question.replace(" ", "")) >= 15:
+        return question
+    prev = next((m["content"] for m in reversed(history) if m["role"] == "user"), None)
+    return f"{prev} {question}" if prev else question
+
+
+def ask_stream(question: str, history: list[dict] | None = None):
     """스트리밍 호출용. (chunk_text, sources_or_None) yield."""
+    if history is None:
+        history = []
+
     articles = load_all_articles()
     top_articles, _ = search_articles(question, articles)
+
+    # 후속 질문으로 검색 실패 시 이전 질문과 합쳐서 재검색
+    if not top_articles and history:
+        expanded = _expand_with_history(question, history)
+        if expanded != question:
+            top_articles, _ = search_articles(expanded, articles)
 
     if not top_articles:
         yield NO_RESULT_MSG, []
@@ -320,6 +363,7 @@ def ask_stream(question: str):
             f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text'][:1000]}"
             for a in top_articles
         )
-        for chunk in llm.stream(GENERAL_PROMPT.format(context=context, question=question)):
+        messages = _build_messages(context, question, history)
+        for chunk in llm.stream(messages):
             yield chunk.content, None
         yield "", sources
