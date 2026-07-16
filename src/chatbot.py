@@ -38,8 +38,11 @@ GENERAL_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
     template="""{system_role}
 
-아래 조문을 근거로 질문에 답하세요. 조문에 없는 내용은 절대 추측하지 마세요.
-먼저 조문에서 질문과 관련된 내용을 모두 찾은 뒤, 핵심 내용을 조목조목 설명하세요. 답변 마지막에 근거 조문(법령명, 조번호)을 명시하세요.
+아래 [세법 조문]만을 근거로 질문에 답하세요.
+- 날짜, 금액, 비율 등 모든 수치는 반드시 아래 조문에서 읽은 값만 사용하세요.
+- 조문의 내용이 당신이 알고 있는 내용과 다르더라도 조문을 우선합니다.
+- 조문에 없는 내용은 절대 추측하거나 추가하지 마세요.
+먼저 조문에서 질문과 관련된 내용을 찾은 뒤, 핵심 내용을 조목조목 설명하세요. 답변 마지막에 근거 조문(법령명, 조번호)을 명시하세요.
 
 [답변 예시]
 질문: 법인세 신고기한은 언제인가요?
@@ -92,9 +95,9 @@ CONCEPT_MAP: list[tuple[list[str], str, str]] = [
     (["퇴직소득세"], "소득세법", "22"),
     # ── 법인세 신고/납부 ──
     (["법인세 신고", "법인세 신고기한", "법인세 납세"], "법인세법", "60"),
-    # ── 소득세 신고/납부 ──
-    (["소득세 신고기한", "종합소득세 신고", "종합소득 신고기한"], "소득세법", "70", "종합소득과세표준 확정신고"),
+    # ── 소득세 신고/납부 (구체적인 것 먼저) ──
     (["성실신고", "성실신고확인", "성실신고대상", "성실신고 신고기한"], "소득세법", "70", "성실신고확인서 제출"),
+    (["소득세 신고기한", "종합소득세 신고", "종합소득 신고기한"], "소득세법", "70", "종합소득과세표준 확정신고"),
     # ── 특별세액공제 (59조에 여러 조문이 혼재 → 제목으로 구분) ──
     (["교육비 세액공제", "교육비공제", "교육비"], "소득세법", "59", "특별세액공제"),
     (["의료비 세액공제", "의료비공제", "의료비"], "소득세법", "59", "특별세액공제"),
@@ -205,6 +208,28 @@ def parse_rate_table(raw_text: str) -> str | None:
     if not result_parts:
         return None
     return '\n'.join(result_parts).strip()
+
+
+def parse_deadline(raw_text: str) -> str | None:
+    """신고기한 관련 조문에서 기한 문장을 직접 추출."""
+    text = clean_raw(raw_text)
+    patterns = [
+        r'[^\n]*(?:신고|제출|납부)[^\n]*(?:\d+월\s*\d+일까지|이내)[^\n]*',
+        r'[^\n]*\d+월\s*\d+일부터\s*\d+월\s*\d+일까지[^\n]*',
+    ]
+    found = []
+    for pat in patterns:
+        for m in re.finditer(pat, text):
+            line = m.group().strip()
+            if len(line) > 10:
+                found.append(line)
+    if not found:
+        return None
+    seen = []
+    for f in found:
+        if f not in seen:
+            seen.append(f)
+    return '\n'.join(f'• {s}' for s in seen[:5])
 
 
 # ──────────────────────────────────────────────
@@ -397,6 +422,8 @@ def ask_stream(question: str, history: list[dict] | None = None):
         for a in top_articles
     ]
 
+    deadline = parse_deadline(top['_raw_text']) if any(kw in question for kw in ['신고기한', '납부기한', '제출기한', '신고기간', '신고']) else None
+
     if rate_table:
         for chunk in llm.stream(INTRO_PROMPT.format(
             article_title=top['article_title'], law=top['law'],
@@ -405,11 +432,21 @@ def ask_stream(question: str, history: list[dict] | None = None):
             yield chunk.content, None
         suffix = f"\n\n{rate_table}\n\n[근거: {top['law']} 제{top['article_num']}조 {top['article_title']}]"
         yield suffix, sources
+    elif deadline:
+        ref = f"[근거: {top['law']} 제{top['article_num']}조 {top['article_title']}]"
+        yield f"{deadline}\n\n{ref}", sources
     else:
-        context = "\n\n".join(
-            f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text'][:2000]}"
-            for a in top_articles
-        )
+        def build_context(article, q):
+            text = article['text']
+            best, best_score = '', 0
+            for line in text.split('\n'):
+                score = sum(1 for w in ['기한', '까지', '이내', '월', '일', '분의', '%'] if w in line)
+                if score > best_score:
+                    best_score, best = score, line.strip()
+            header = f"[핵심 조항] {best}\n\n" if best_score >= 2 else ""
+            return f"[{article['law']} 제{article['article_num']}조 {article['article_title']}]\n{header}{text[:2000]}"
+
+        context = "\n\n".join(build_context(a, question) for a in top_articles)
         messages = _build_messages(context, question, history)
         for chunk in llm.stream(messages):
             yield chunk.content, None
