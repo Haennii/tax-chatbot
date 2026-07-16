@@ -41,6 +41,15 @@ GENERAL_PROMPT = PromptTemplate(
 아래 조문을 근거로 질문에 답하세요. 조문에 없는 내용은 절대 추측하지 마세요.
 핵심 내용을 조목조목 설명하고, 답변 마지막에 근거 조문(법령명, 조번호)을 명시하세요.
 
+[답변 예시]
+질문: 법인세 신고기한은 언제인가요?
+답변: 내국법인은 각 사업연도 종료일이 속하는 달의 말일부터 3개월 이내에 법인세 과세표준과 세액을 신고해야 합니다.
+근거: 법인세법 제60조
+
+질문: 접대비 손금한도는 얼마인가요?
+답변: 접대비 손금 한도는 기본한도(중소기업 3,600만 원, 그 외 1,200만 원)에 수입금액 기준 한도를 합산한 금액입니다.
+근거: 법인세법 제25조
+
 [세법 조문]
 {{context}}
 
@@ -205,6 +214,35 @@ def load_all_articles() -> list[dict]:
 
 
 # ──────────────────────────────────────────────
+# 동의어/약어 확장 테이블
+# ──────────────────────────────────────────────
+SYNONYMS: dict[str, str] = {
+    "양도세": "양도소득세",
+    "부가세": "부가가치세",
+    "법세": "법인세",
+    "소세": "소득세",
+    "신고기한": "예정신고 확정신고",
+    "납부기한": "신고 납부",
+    "공제율": "세액공제 공제",
+    "한도액": "한도",
+    "손금한도": "손금 한도",
+    "세율표": "세율 과세표준",
+    "퇴직금": "퇴직급여",
+    "연구개발": "연구인력개발",
+    "R&D": "연구인력개발",
+    "의료비": "의료비 세액공제",
+    "교육비": "교육비 세액공제",
+}
+
+
+def expand_query(query: str) -> str:
+    """약어·동의어를 원어로 치환해 BM25 매칭률 향상."""
+    for short, full in SYNONYMS.items():
+        query = query.replace(short, full)
+    return query
+
+
+# ──────────────────────────────────────────────
 # BM25 검색 (개념 매핑 실패 시 폴백)
 # ──────────────────────────────────────────────
 def tokenize(text: str) -> list[str]:
@@ -243,13 +281,14 @@ NO_RESULT_MSG = (
 
 def search_articles(question: str, articles: list) -> tuple[list, bool]:
     """(조문 목록, 개념매핑 여부) 반환"""
-    # 1단계: 개념 직접 매핑
-    matched = find_by_concept(question, articles)
+    # 1단계: 개념 직접 매핑 (동의어 확장 후 시도)
+    expanded = expand_query(question)
+    matched = find_by_concept(expanded, articles)
     if matched:
         return matched, True
 
-    # 2단계: BM25 폴백
-    results, top_score = bm25_search(question, articles, k=config.TOP_K)
+    # 2단계: BM25 폴백 (동의어 확장된 쿼리 사용)
+    results, top_score = bm25_search(expanded, articles, k=config.TOP_K)
     if top_score < MIN_RELEVANCE_SCORE:
         return [], False
 
