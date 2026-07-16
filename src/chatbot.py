@@ -81,7 +81,6 @@ CONCEPT_MAP: list[tuple[list[str], str, str]] = [
     (["접대비 한도", "접대비"], "법인세법", "25"),
     (["감가상각"], "법인세법", "23"),
     # ── 세액공제 ──
-    (["의료비 세액공제", "의료비공제", "의료비"], "소득세법 시행령", "118"),
     (["연구인력개발", "연구개발세액공제", "연구비 세액공제"], "조세특례제한법", "10"),
     (["중소기업 특별세액감면"], "조세특례제한법", "7"),
     # ── 소득세 ──
@@ -93,18 +92,24 @@ CONCEPT_MAP: list[tuple[list[str], str, str]] = [
     (["퇴직소득세"], "소득세법", "22"),
     # ── 법인세 신고/납부 ──
     (["법인세 신고", "법인세 신고기한", "법인세 납세"], "법인세법", "60"),
+    # ── 특별세액공제 (59조에 여러 조문이 혼재 → 제목으로 구분) ──
+    (["교육비 세액공제", "교육비공제", "교육비"], "소득세법", "59", "특별세액공제"),
+    (["의료비 세액공제", "의료비공제", "의료비"], "소득세법", "59", "특별세액공제"),
 ]
 
 
 def find_by_concept(question: str, articles: list[dict]) -> list[dict]:
     """개념 매핑으로 조문 직접 반환. 없으면 빈 리스트."""
-    q = question.replace(" ", "")  # 공백 제거 후 매칭
-    for keywords, law_name, article_num in CONCEPT_MAP:
+    q = question.replace(" ", "")
+    for entry in CONCEPT_MAP:
+        keywords, law_name, article_num = entry[0], entry[1], entry[2]
+        title_filter = entry[3] if len(entry) == 4 else None
         for kw in keywords:
             if kw.replace(" ", "") in q:
                 matched = [
                     a for a in articles
                     if a["law"] == law_name and a["article_num"] == article_num
+                    and (title_filter is None or a["article_title"] == title_filter)
                 ]
                 if matched:
                     return matched
@@ -282,12 +287,12 @@ NO_RESULT_MSG = (
 def search_articles(question: str, articles: list) -> tuple[list, bool]:
     """(조문 목록, 개념매핑 여부) 반환"""
     # 1단계: 개념 직접 매핑 (동의어 확장 후 시도)
-    expanded = expand_query(question)
-    matched = find_by_concept(expanded, articles)
+    matched = find_by_concept(question, articles)
     if matched:
         return matched, True
 
     # 2단계: BM25 폴백 (동의어 확장된 쿼리 사용)
+    expanded = expand_query(question)
     results, top_score = bm25_search(expanded, articles, k=config.TOP_K)
     if top_score < MIN_RELEVANCE_SCORE:
         return [], False
@@ -314,7 +319,7 @@ def _build_answer_sync(top_articles: list, question: str, llm) -> str:
         return f"{intro}\n\n{rate_table}\n\n[근거: {top['law']} 제{top['article_num']}조 {top['article_title']}]"
     else:
         context = "\n\n".join(
-            f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text'][:1000]}"
+            f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text'][:2000]}"
             for a in top_articles
         )
         return llm.invoke(GENERAL_PROMPT.format(context=context, question=question)).content
@@ -399,7 +404,7 @@ def ask_stream(question: str, history: list[dict] | None = None):
         yield suffix, sources
     else:
         context = "\n\n".join(
-            f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text'][:1000]}"
+            f"[{a['law']} 제{a['article_num']}조 {a['article_title']}]\n{a['text'][:2000]}"
             for a in top_articles
         )
         messages = _build_messages(context, question, history)
